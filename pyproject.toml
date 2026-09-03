@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "recoveriq"
+version = "0.1.0"
+description = "Economic & Context-Aware Payment Recovery Engine"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+    { name = "RecoverIQ Research Team" }
+]
+license = { text = "MIT" }
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+]
+llm = [
+    "google-genai",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --strict-markers"
+markers = [
+    "llm_integration: tests calling external live LLM APIs (skipped by default unless GEMINI_API_KEY is provided)",
+]
