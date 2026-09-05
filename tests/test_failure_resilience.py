@@ -386,21 +386,21 @@ def test_policy_rejection_hard_decline_retries():
 
 
 # ==============================================================================
-# 7. CRITICAL COOLDOWN TEST DESIGN (SPEC §11.3)
+# 7. COOLDOWN INVARIANT ENFORCEMENT (SPEC §11.3)
 # ==============================================================================
 
-@pytest.mark.xfail(strict=True, reason="Known safety defect in gate.py lines 130-153: cooldown failure authorizes action instead of rejecting/clamping.")
-def test_spec_correct_cooldown_enforcement():
-    """SPEC §11.3 / §18: A retry requested within the mandatory cooldown window must be rejected/clamped.
+@pytest.mark.parametrize("action", [Action.RETRY_LATER, Action.NUDGE])
+def test_spec_correct_cooldown_enforcement_unelapsed(action: Action):
+    """SPEC §11.3 / §18: A retry or nudge requested within the mandatory cooldown window must be rejected/clamped.
 
     SPEC REQUIREMENT:
     'Mandatory Cooldowns: Enforce minimum duration between consecutive interventions on the same payment...
      Any action attempting an illegal transition or violating cooldown must be rejected.'
 
-    EXPECTED RESULT (XFAIL STRICT):
-    Because gate.py records passed=False, then appends passed=True, and authorizes the action,
-    this test asserts that the policy decision must be is_authorized=False and authorized_action=STOP.
-    It is marked strict xfail to maintain visibility of the defect without masking it.
+    VERIFIED BEHAVIOR:
+    1. is_authorized must be False
+    2. authorized_action must be Action.STOP
+    3. Exactly one COOLDOWN_WINDOW_CHECK result recorded, with passed=False
     """
     config = PolicyConfig(cooldown_seconds=900)  # 15 minutes
     gate = InvariantPolicyGate(config)
@@ -423,54 +423,59 @@ def test_spec_correct_cooldown_enforcement():
         failure_severity=FailureSeverity.TRANSIENT,
         last_attempt_timestamp=datetime.now(timezone.utc) - timedelta(seconds=60),
     )
-    decision = RecoveryDecision("pay_cooldown_001", Action.RETRY_LATER)
+    decision = RecoveryDecision("pay_cooldown_001", action)
 
     pol_decision = gate.authorize(payment, context, decision)
 
     # SPEC §11.3 invariant: must NOT authorize an unelapsed cooldown
     assert pol_decision.is_authorized is False, "SPEC §11.3 requires rejection when cooldown has not elapsed!"
-    assert pol_decision.authorized_action == Action.STOP, "SPEC §11.3 requires fallback clamp on cooldown breach!"
+    assert pol_decision.authorized_action == Action.STOP, "SPEC §11.3 requires fallback clamp to STOP on cooldown breach!"
+    assert "cooldown" in pol_decision.rejection_reason.lower()
+
+    # Rule checks audit: exactly one COOLDOWN_WINDOW_CHECK with passed=False
+    cd_checks = [r for r in pol_decision.rule_results if r.rule_name == "COOLDOWN_WINDOW_CHECK"]
+    assert len(cd_checks) == 1
+    assert cd_checks[0].passed is False
 
 
-def test_canary_observed_cooldown_gate_violation():
-    """CANARY TEST: Explicitly documents the CURRENT observed behavior of gate.py lines 130-153.
+@pytest.mark.parametrize("action", [Action.RETRY_LATER, Action.NUDGE])
+def test_spec_correct_cooldown_enforcement_elapsed(action: Action):
+    """SPEC §11.3: When cooldown has elapsed, the proposed action is authorized.
 
-    Documents the exact defect:
-    1. gate.py checks elapsed < cooldown_seconds (60s < 900s).
-    2. It appends PolicyRuleResult('COOLDOWN_WINDOW_CHECK', passed=False).
-    3. It immediately appends PolicyRuleResult('COOLDOWN_WINDOW_CHECK', passed=True, 'Cooldown validated for scheduled execution.').
-    4. It drops through and AUTHORIZES Action.RETRY_LATER (is_authorized=True).
-
-    This canary guarantees that if gate.py is silently modified, this test alerts developers.
+    VERIFIED BEHAVIOR:
+    1. is_authorized must be True
+    2. authorized_action must be the proposed action
+    3. Exactly one COOLDOWN_WINDOW_CHECK result recorded, with passed=True
     """
-    config = PolicyConfig(cooldown_seconds=900)
+    config = PolicyConfig(cooldown_seconds=900)  # 15 minutes
     gate = InvariantPolicyGate(config)
 
     payment = Payment(
-        payment_id="pay_canary_001",
-        customer_id="cust_001",
+        payment_id="pay_cooldown_002",
+        customer_id="cust_002",
         amount=Decimal("100.00"),
         attempt_count=1,
     )
+    # Last attempt was 1000 seconds ago (>= 900 seconds cooldown)
     context = PaymentContext(
-        payment_id="pay_canary_001",
-        customer_id="cust_001",
+        payment_id="pay_cooldown_002",
+        customer_id="cust_002",
         customer_tier=CustomerTier.STANDARD,
         payment_method=PaymentMethod.CREDIT_CARD,
         raw_error_code="TIMEOUT",
         raw_error_message="Timeout",
         failure_category=FailureCategory.NETWORK_TIMEOUT,
         failure_severity=FailureSeverity.TRANSIENT,
-        last_attempt_timestamp=datetime.now(timezone.utc) - timedelta(seconds=60),
+        last_attempt_timestamp=datetime.now(timezone.utc) - timedelta(seconds=1000),
     )
-    decision = RecoveryDecision("pay_canary_001", Action.RETRY_LATER)
+    decision = RecoveryDecision("pay_cooldown_002", action)
 
     pol_decision = gate.authorize(payment, context, decision)
 
-    # Document current buggy behavior:
     assert pol_decision.is_authorized is True
-    assert pol_decision.authorized_action == Action.RETRY_LATER
+    assert pol_decision.authorized_action == action
 
-    rule_names = [(r.rule_name, r.passed) for r in pol_decision.rule_results]
-    assert ("COOLDOWN_WINDOW_CHECK", False) in rule_names
-    assert ("COOLDOWN_WINDOW_CHECK", True) in rule_names
+    # Rule checks audit: exactly one COOLDOWN_WINDOW_CHECK with passed=True
+    cd_checks = [r for r in pol_decision.rule_results if r.rule_name == "COOLDOWN_WINDOW_CHECK"]
+    assert len(cd_checks) == 1
+    assert cd_checks[0].passed is True

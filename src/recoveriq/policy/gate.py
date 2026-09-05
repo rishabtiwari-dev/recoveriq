@@ -142,12 +142,19 @@ class InvariantPolicyGate:
                         message=f"Elapsed time ({elapsed_seconds:.1f}s) < required cooldown ({self.config.cooldown_seconds}s).",
                     )
                 )
-                # Keep proposed action if validly scheduled for later, or authorize with note
+                return PolicyDecision.reject_and_clamp(
+                    payment_id=payment.payment_id,
+                    proposed_action=proposed,
+                    fallback_action=Action.STOP,
+                    reason=f"Mandatory cooldown of {self.config.cooldown_seconds}s not satisfied (elapsed: {elapsed_seconds:.1f}s).",
+                    rule_results=rule_results,
+                )
+            else:
                 rule_results.append(
                     PolicyRuleResult(
                         rule_name="COOLDOWN_WINDOW_CHECK",
                         passed=True,
-                        message="Cooldown validated for scheduled execution.",
+                        message=f"Cooldown window satisfied ({elapsed_seconds:.1f}s >= {self.config.cooldown_seconds}s).",
                     )
                 )
 
